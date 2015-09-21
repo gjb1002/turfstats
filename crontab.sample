@@ -1,0 +1,4 @@
+10,30,50 * * * * /path/to/get_turf_data.py
+59 11 * * 7 [ $(date +\%d) -le 07 ] && /path/to/show_top.py > /path/to/prev_toplist.txt
+0 12 * * 7 [ $(date +\%d) -le 07 ] && cp /path/to/curr_turf_data.txt /path/to/prev_turf_data.txt
+1 12 * * 7 [ $(date +\%d) -le 07 ] && /path/to/get_turf_data.py
