@@ -3,6 +3,12 @@
 import requests, sys, os
 from datetime import datetime
 from pprint import pprint
+
+reqver = tuple(map(int, requests.__version__.split(".")))
+if reqver <= (2, 4, 1):
+    sys.stderr.write("ERROR: Python requests module must be at least version 2.4.2, found version " + requests.__version__ + "\n")
+    sys.exit(1)
+
 currDir = os.path.dirname(os.path.abspath(__file__))
 configFileName = os.path.join(currDir, "turf_config.txt")
 if not os.path.isfile(configFileName):
@@ -10,7 +16,7 @@ if not os.path.isfile(configFileName):
     sys.exit(1)
 
 configDict = eval(open(configFileName).read())
-user = configDict.get("username")
+user = configDict.get("username") if len(sys.argv) == 1 else sys.argv[1]
 r = requests.post('http://api.turfgame.com/v4/users', json=[{"name" : user}])
 try:
     dict = r.json()[0]

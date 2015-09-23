@@ -6,6 +6,11 @@ import requests, os
 from datetime import datetime
 from pprint import pprint
 
+reqver = tuple(map(int, requests.__version__.split(".")))
+if reqver <= (2, 4, 1):
+    sys.stderr.write("ERROR: Python requests module must be at least version 2.4.2, found version " + requests.__version__ + "\n")
+    sys.exit(1)
+
 def get_new_zones(user):
     r = requests.post('http://api.turfgame.com/v4/users', json=[{"name" : user}])
     dict = r.json()[0]

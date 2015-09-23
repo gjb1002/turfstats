@@ -2,8 +2,17 @@
 from datetime import datetime, timedelta
 import time, sys, requests, os, argparse
 from pprint import pprint
+from glob import glob
 
 class Zone:
+    allZones = {}
+    @classmethod
+    def makeZone(cls, zoneId, *args):
+        if zoneId in cls.allZones:
+            return cls.allZones[zoneId]
+        else:
+            return Zone(zoneId, *args)
+
     def __init__(self, zoneId, prevAvg, name, takepoints, pph, longitude, latitude):
         self.zoneId = zoneId
         self.name = name
@@ -13,6 +22,7 @@ class Zone:
         self.longitude = longitude
         self.latitude = latitude
         self.expectedPoints = None
+        self.allZones[zoneId] = self
 
     def __repr__(self):
         return self.name.ljust(15).encode("utf-8") + " (" + str(self.takepoints).rjust(3) + "/+" + str(self.pph) + ")      "
@@ -101,6 +111,10 @@ class User:
         nameWithPlace = name + "(" + str(self.place) + ")"
         return str(nameWithPlace.ljust(20).encode("utf-8"))
 
+def dtOut(dt):
+    return dt.strftime("%Y-%m-%d %H:%M") if dt else ""
+
+
 class RulePeriod:
     def __init__(self, zone, user, startTime, endTime, complete=True):
         self.zone = zone
@@ -108,9 +122,6 @@ class RulePeriod:
         self.startTime = startTime
         self.endTime = endTime
         self.complete = complete
-
-    def dtOut(self, dt):
-        return dt.strftime("%Y-%m-%d %H:%M") if dt else ""
 
     def hoursOut(self, hourFloat):
         wholeHours = int(hourFloat)
@@ -128,8 +139,70 @@ class RulePeriod:
         hoursText = self.hoursOut(hoursHeld)
         endTimeOut = ""
         if self.complete:
-            endTimeOut = self.dtOut(self.endTime)
-        return self.dtOut(self.startTime).ljust(20) + endTimeOut.ljust(20) + (hoursText.rjust(6) + suffix).ljust(10) + str(points).rjust(4) + suffix.ljust(5)
+            endTimeOut = dtOut(self.endTime)
+        return dtOut(self.startTime).ljust(20) + endTimeOut.ljust(20) + (hoursText.rjust(6) + suffix).ljust(10) + str(points).rjust(4) + suffix.ljust(5)
+
+class Journey:
+    def __init__(self, startZone, endZone, startTime, endTime):
+        self.startZone = startZone
+        self.endZone = endZone
+        self.startTime = startTime
+        self.endTime = endTime
+
+    def getDuration(self):
+        return self.endTime - self.startTime
+
+    
+class Connection:
+    def __init__(self, startZone, endZone):
+        self.startZone = startZone
+        self.endZone = endZone
+        self.journeys = []
+    
+    def addJourney(self, j):
+        self.journeys.append(j)
+
+    def formatDuration(self, duration):
+        return datetime.utcfromtimestamp(duration.seconds).strftime("%M:%S")
+
+    def removeWalking(self, durations, avgDuration):
+        newDurations = []
+        maxCycling = avgDuration * 2 # If it's more than twice the average it's probably walking where there is cycling :)
+        for duration in durations:
+            if duration <= maxCycling:
+                newDurations.append(duration)
+        return newDurations
+
+    def description(self, zone):
+        outbound = zone is self.startZone
+        otherZone = self.endZone if outbound else self.startZone
+        durations = [ j.getDuration() for j in self.journeys ]
+        while True:
+            journeyCount = len(durations)
+            avgDuration = sum(durations, timedelta()) / journeyCount
+            newDurations = self.removeWalking(durations, avgDuration)
+            if len(durations) == len(newDurations):
+                break
+            durations = newDurations
+        avgStr = self.formatDuration(avgDuration)
+        directionStr = "-> " if outbound else "<- "
+        return directionStr + otherZone.name.ljust(15).encode("utf-8") + ("(" + str(otherZone.expectedPoints) + ")").ljust(15) + \
+            avgStr.ljust(10) + "(" + str(journeyCount) + " journeys)   " + ", ".join(map(self.formatDuration, durations))
+
+
+def convertToJourneys(rulePeriods):
+    prevPeriod = None
+    journeysByZone = {}
+    for period in rulePeriods:
+        if prevPeriod is not None:
+            journeyTime = period.startTime - prevPeriod.startTime
+            if journeyTime <= timedelta(minutes=20):
+                journey = Journey(prevPeriod.zone, period.zone, prevPeriod.startTime, period.startTime)
+                journeysByZone.setdefault(prevPeriod.zone, []).append(journey)
+                journeysByZone.setdefault(period.zone, []).append(journey)
+        prevPeriod = period
+    return journeysByZone
+
             
 def parseEndDate(dateStr):
     return datetime.strptime(dateStr + " 12", "%Y-%m-%d %H")
@@ -140,6 +213,68 @@ def getUser(userArg):
             return User(userId=int(userArg))
         else:
             return User(userName=userArg)
+
+def parseZoneData(fileName, finished, showUser, staticData, prevAvgData):
+    now = datetime.now()
+    tzOffset = now - datetime.utcnow()
+    if finished:
+        now = parseEndDate(fileName[:10])
+
+    zoneData = eval(open(fileName).read())
+
+    userIds = {}
+    allRulePeriods = []
+    rulePeriodsByZone = {}
+
+    for zoneId, takeoverInfo in zoneData.items():
+        prevAvg = prevAvgData.get(zoneId)
+        zone = Zone.makeZone(zoneId, prevAvg, *staticData.get(zoneId))
+        if not zone.matchesDirection(args.direction):
+            continue
+        prevDt, prevUser = None, None
+        for dateStr, userId in takeoverInfo:
+            user = userIds.setdefault(userId, User(userId))
+            if user == prevUser:
+                continue
+            dt = datetime.strptime(dateStr[:-5], "%Y-%m-%dT%H:%M:%S")
+            dtLocal = dt + tzOffset
+            if prevDt:
+                rulePeriod = RulePeriod(zone, prevUser, prevDt, dtLocal)
+                if showUser is None or showUser == prevUser:
+                    allRulePeriods.append(rulePeriod)
+                rulePeriodsByZone.setdefault(zone, []).append(rulePeriod)
+            prevDt = dtLocal
+            prevUser = user
+
+        if prevDt is not None and (showUser is None or showUser == prevUser):
+            rulePeriod = RulePeriod(zone, prevUser, prevDt, now, complete=finished)
+            if showUser is None or showUser == prevUser:
+                allRulePeriods.append(rulePeriod)
+            rulePeriodsByZone.setdefault(zone, []).append(rulePeriod)
+    return userIds, allRulePeriods, rulePeriodsByZone
+
+def makeConnections(zone, journeys):
+    connections = {}
+    for journey in journeys:
+        outbound = zone is journey.startZone
+        otherZone = journey.endZone if outbound else journey.startZone
+        connections.setdefault((otherZone, outbound), Connection(journey.startZone, journey.endZone)).addJourney(journey)
+    return connections
+
+def printTimeReport(allRulePeriods, *args):
+    for histfn in glob("*-*-*_turf_data.txt"):
+        _, rulePeriods, _ = parseZoneData(histfn, True, *args)
+        allRulePeriods += rulePeriods
+    allRulePeriods.sort(key=lambda rp: rp.startTime)
+    journeysByZone = convertToJourneys(allRulePeriods)
+    for zone in sorted(journeysByZone.keys(), key=lambda z: z.expectedPoints, reverse=True):
+        journeys = journeysByZone.get(zone)
+        connections = makeConnections(zone, journeys)
+        print zone, zone.getExpectedPointsOutput()
+        for (otherZone, outbound) in sorted(connections.keys(), key = lambda (z, o): (z.expectedPoints, o), reverse = True):
+            connection = connections.get((otherZone, outbound))
+            print "  ", connection.description(zone)
+
 
 currDir = os.path.dirname(os.path.abspath(__file__))
 defaultFile = os.path.join(currDir, "curr_turf_data.txt")
@@ -159,20 +294,11 @@ parser.add_argument('-d', '--direction', help='only show zones in a certain dire
 parser.add_argument('-f', '--file', default=defaultFile, help='turf data file to use')
 parser.add_argument('-z', '--zonefile', help='file to store zone average data in')
 parser.add_argument('-u', '--user', const=default_user, nargs="?", help='user to show data for')
+parser.add_argument('-t', '--timereport', action="store_true", help='show time data for zones')
 
 args = parser.parse_args()
 
-now = datetime.now()
-tzOffset = now - datetime.utcnow()
-finished = False
-timeAnalysis = False
-if args.file != defaultFile:
-    finished = True
-    now = parseEndDate(args.file[:10])
-
 showUser = getUser(args.user)
-
-zoneData = eval(open(args.file).read())
 
 staticFile = os.path.join(currDir, "static_zone_data.txt")
 staticData = eval(open(staticFile).read())
@@ -182,35 +308,7 @@ prevAvgFile = os.path.join(currDir, "prev_turf_avg.txt")
 if os.path.isfile(prevAvgFile):
     prevAvgData = eval(open(prevAvgFile).read())
 
-userIds = {}
-allRulePeriods = []
-rulePeriodsByZone = {}
-
-for zoneId, takeoverInfo in zoneData.items():
-    prevAvg = prevAvgData.get(zoneId)
-    zone = Zone(zoneId, prevAvg, *staticData.get(zoneId))
-    if not zone.matchesDirection(args.direction):
-        continue
-    prevDt, prevUser = None, None
-    for dateStr, userId in takeoverInfo:
-        user = userIds.setdefault(userId, User(userId))
-        if user == prevUser:
-            continue
-        dt = datetime.strptime(dateStr[:-5], "%Y-%m-%dT%H:%M:%S")
-        dtLocal = dt + tzOffset
-        if prevDt:
-            rulePeriod = RulePeriod(zone, prevUser, prevDt, dtLocal)
-            if showUser is None or showUser == prevUser:
-                allRulePeriods.append(rulePeriod)
-            rulePeriodsByZone.setdefault(zone, []).append(rulePeriod)
-        prevDt = dtLocal
-        prevUser = user
-  
-    if prevDt is not None and (showUser is None or showUser == prevUser):
-        rulePeriod = RulePeriod(zone, prevUser, prevDt, now, complete=finished)
-        if showUser is None or showUser == prevUser:
-            allRulePeriods.append(rulePeriod)
-        rulePeriodsByZone.setdefault(zone, []).append(rulePeriod)
+userIds, allRulePeriods, rulePeriodsByZone = parseZoneData(args.file, args.file != defaultFile, showUser, staticData, prevAvgData)
 
 for zone, zonePeriods in rulePeriodsByZone.items():
     zone.setExpectedPoints(zonePeriods)
@@ -226,8 +324,11 @@ if args.zonefile:
 
 if showUser:
     allRulePeriods.sort(key=lambda rp: rp.startTime)
-    for rulePeriod in allRulePeriods:
-        print rulePeriod.zone, rulePeriod, rulePeriod.zone.getExpectedPointsOutput()
+    if args.timereport:
+        printTimeReport(allRulePeriods, showUser, staticData, prevAvgData)
+    else:
+        for rulePeriod in allRulePeriods:
+            print rulePeriod.zone, rulePeriod, rulePeriod.zone.getExpectedPointsOutput()
 else:
     User.getUserInfo(userIds)
     for zone in sorted(rulePeriodsByZone.keys(), key=lambda z: z.expectedPoints, reverse=True):
