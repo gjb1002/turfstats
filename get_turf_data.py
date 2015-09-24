@@ -23,7 +23,7 @@ def get_zones_from_list(dataType, info):
 
 currDir = os.path.dirname(os.path.abspath(__file__))
 fileName = os.path.join(currDir, "curr_turf_data.txt")
-zoneData = eval(open(fileName).read())
+zoneData = eval(open(fileName).read()) if os.path.isfile(fileName) else {}
 zoneIds = zoneData.keys()
 
 configFileName = os.path.join(currDir, "turf_config.txt")
@@ -33,6 +33,12 @@ if not os.path.isfile(configFileName):
 
 configDict = eval(open(configFileName).read())
 user = configDict.get("username")
+
+for newZoneId in get_new_zones(user):
+    if newZoneId not in zoneIds:
+        zoneIds.append(newZoneId)
+
+# Hardcode any extra zones you want to monitor here
 newZoneNames = []
 if len(newZoneNames):
     zoneInfoList, _ = get_zones_from_list("name", newZoneNames)
