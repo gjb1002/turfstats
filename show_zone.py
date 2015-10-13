@@ -10,5 +10,8 @@ def get_zones_from_list(dataType, info):
 
 
 zoneName = sys.argv[1]
-zoneInfoList, _ = get_zones_from_list("name", [ zoneName ])
+if zoneName.isdigit():
+    zoneInfoList, _ = get_zones_from_list("id", [ zoneName ])
+else:
+    zoneInfoList, _ = get_zones_from_list("name", [ zoneName ])
 pprint(zoneInfoList)
