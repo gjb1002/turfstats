@@ -279,6 +279,12 @@ def printTimeReport(allRulePeriods, *args):
             connection = connections.get((otherZone, outbound))
             print "  ", connection.description(zone)
 
+def describeZoneWithPeriods(zone, zonePeriods=[]):
+    print zone, zone.getExpectedPointsOutput()
+    for rulePeriod in zonePeriods:
+        print "  ", rulePeriod.user, rulePeriod
+
+
 
 currDir = os.path.dirname(os.path.abspath(__file__))
 defaultFile = os.path.join(currDir, "curr_turf_data.txt")
@@ -335,9 +341,12 @@ if showUser:
             print rulePeriod.zone, rulePeriod, rulePeriod.zone.getExpectedPointsOutput()
 else:
     User.getUserInfo(userIds)
+    neutrals = []
     for zone in sorted(rulePeriodsByZone.keys(), key=lambda z: z.expectedPoints, reverse=True):
         zonePeriods = rulePeriodsByZone.get(zone)
-        print zone, zone.getExpectedPointsOutput()
-        for rulePeriod in zonePeriods:
-            print "  ", rulePeriod.user, rulePeriod
-  
+        if zonePeriods:
+            describeZoneWithPeriods(zone, zonePeriods)
+        else:
+            neutrals.append(zone)
+    for zone in neutrals:
+        describeZoneWithPeriods(zone)
