@@ -56,7 +56,7 @@ for zoneInfo in zoneInfoList:
         dataNow = zoneInfo["dateLastTaken"], zoneInfo["currentOwner"]["id"]
         if currId in zoneData:
             recordsList = zoneData.get(currId)
-            if len(recordsList) == 0 or recordsList[-1] != dataNow:
+            if dataNow not in recordsList:
                 recordsList.append(dataNow)
         else:
             zoneData[currId] = [ dataNow ]
