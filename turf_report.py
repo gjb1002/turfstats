@@ -59,6 +59,9 @@ class Zone:
                 self.expectedPoints = self.getPoints(rulePeriods[0].getHours())
             if self.prevExpectedPoints is None:
                 return
+            elif len(rulePeriods) == 0:
+                self.expectedPoints = self.prevExpectedPoints
+                return
 
         allPoints = [ self.getPoints(p.getHours()) for p in rulePeriods if p.complete ]
         if self.prevExpectedPoints is not None:
@@ -231,6 +234,7 @@ def parseZoneData(fileName, finished, showUser, staticData, prevAvgData):
         zone = Zone.makeZone(zoneId, prevAvg, *staticData.get(zoneId))
         if not zone.matchesDirection(args.direction):
             continue
+        currRulePeriods = rulePeriodsByZone.setdefault(zone, []) 
         prevDt, prevUser = None, None
         for dateStr, userId in takeoverInfo:
             user = userIds.setdefault(userId, User(userId))
@@ -242,15 +246,15 @@ def parseZoneData(fileName, finished, showUser, staticData, prevAvgData):
                 rulePeriod = RulePeriod(zone, prevUser, prevDt, dtLocal)
                 if showUser is None or showUser == prevUser:
                     allRulePeriods.append(rulePeriod)
-                rulePeriodsByZone.setdefault(zone, []).append(rulePeriod)
+                currRulePeriods.append(rulePeriod)
             prevDt = dtLocal
             prevUser = user
 
-        if prevDt is not None and (showUser is None or showUser == prevUser):
+        if prevDt is not None:
             rulePeriod = RulePeriod(zone, prevUser, prevDt, now, complete=finished)
             if showUser is None or showUser == prevUser:
                 allRulePeriods.append(rulePeriod)
-            rulePeriodsByZone.setdefault(zone, []).append(rulePeriod)
+            currRulePeriods.append(rulePeriod)
     return userIds, allRulePeriods, rulePeriodsByZone
 
 def makeConnections(zone, journeys):
