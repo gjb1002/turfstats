@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import time, sys, requests, os, argparse
 from pprint import pprint
 from glob import glob
+from collections import OrderedDict
 
 class Zone:
     allZones = {}
@@ -53,7 +54,16 @@ class Zone:
         else:
             return True
 
-    def setExpectedPoints(self, rulePeriods):
+    def setExpectedPoints(self, rulePeriods, forUserNow=None):
+        if len(rulePeriods) > 0 and forUserNow:
+            currentPeriod = rulePeriods[-1]
+            if currentPeriod.user == forUserNow and not currentPeriod.complete:
+                if currentPeriod.getHours() > 23:
+                    self.expectedPoints = self.takepoints / 2
+                else:
+                    self.expectedPoints = 0
+                return
+
         if len(rulePeriods) < 2:
             if len(rulePeriods) == 1 and self.prevExpectedPoints is None:
                 self.expectedPoints = self.getPoints(rulePeriods[0].getHours())
@@ -155,42 +165,52 @@ class Journey:
     def getDuration(self):
         return self.endTime - self.startTime
 
+def formatSeconds(secs):
+    return datetime.utcfromtimestamp(secs).strftime("%M:%S")
+
     
 class Connection:
     def __init__(self, startZone, endZone):
         self.startZone = startZone
         self.endZone = endZone
         self.journeys = []
+        self.avgDuration = None
     
     def addJourney(self, j):
         self.journeys.append(j)
-
+        
     def formatDuration(self, duration):
-        return datetime.utcfromtimestamp(duration.seconds).strftime("%M:%S")
+        return formatSeconds(duration.seconds)
 
-    def removeWalking(self, durations, avgDuration):
+    def removeWalking(self, durations):
         newDurations = []
-        maxCycling = avgDuration * 2 # If it's more than twice the average it's probably walking where there is cycling :)
-        for duration in durations:
+        newJourneys = []
+        maxCycling = self.avgDuration * 2 # If it's more than twice the average it's probably walking where there is cycling :)
+        for i, duration in enumerate(durations):
             if duration <= maxCycling:
                 newDurations.append(duration)
+                newJourneys.append(self.journeys[i])
+        self.journeys = newJourneys
         return newDurations
 
-    def description(self, zone):
-        outbound = zone is self.startZone
-        otherZone = self.endZone if outbound else self.startZone
+    def updateAverage(self):
         durations = [ j.getDuration() for j in self.journeys ]
         while True:
             journeyCount = len(durations)
-            avgDuration = sum(durations, timedelta()) / journeyCount
-            newDurations = self.removeWalking(durations, avgDuration)
+            self.avgDuration = sum(durations, timedelta()) / journeyCount
+            newDurations = self.removeWalking(durations)
             if len(durations) == len(newDurations):
                 break
             durations = newDurations
-        avgStr = self.formatDuration(avgDuration)
+ 
+    def description(self, zone):
+        outbound = zone is self.startZone
+        otherZone = self.endZone if outbound else self.startZone
+        avgStr = self.formatDuration(self.avgDuration)
         directionStr = "-> " if outbound else "<- "
+        durations = [ j.getDuration() for j in self.journeys ]
         return directionStr + otherZone.name.ljust(15).encode("utf-8") + ("(" + str(otherZone.expectedPoints) + ")").ljust(15) + \
-            avgStr.ljust(10) + "(" + str(journeyCount) + " journeys)   " + ", ".join(map(self.formatDuration, durations))
+            avgStr.ljust(10) + "(" + str(len(self.journeys)) + " journeys)   " + ", ".join(map(self.formatDuration, durations))
 
 
 def convertToJourneys(rulePeriods):
@@ -263,14 +283,17 @@ def makeConnections(zone, journeys):
         outbound = zone is journey.startZone
         otherZone = journey.endZone if outbound else journey.startZone
         connections.setdefault((otherZone, outbound), Connection(journey.startZone, journey.endZone)).addJourney(journey)
+    for connection in connections.values():
+        connection.updateAverage()
     return connections
 
-def printTimeReport(allRulePeriods, *args):
+def addDataFromEarlierRounds(allRulePeriods, *args):
     for histfn in glob("*-*-*_turf_data.txt"):
         _, rulePeriods, _ = parseZoneData(histfn, True, *args)
         allRulePeriods += rulePeriods
     allRulePeriods.sort(key=lambda rp: rp.startTime)
-    journeysByZone = convertToJourneys(allRulePeriods)
+
+def printTimeReport(journeysByZone):
     for zone in sorted(journeysByZone.keys(), key=lambda z: z.expectedPoints, reverse=True):
         journeys = journeysByZone.get(zone)
         connections = makeConnections(zone, journeys)
@@ -279,6 +302,207 @@ def printTimeReport(allRulePeriods, *args):
             connection = connections.get((otherZone, outbound))
             print "  ", connection.description(zone)
 
+class ZonePath:
+    def __init__(self, zones, totalTime):
+        self.pivotZone = None
+        self.allPivots = set()
+        self.prePivot = None
+        self.postPivot = None
+        self.totalTime = totalTime
+        self.allZones = []
+        zonesSeen = set()
+        for z, secs in zones:
+            points = 0 if z in zonesSeen else z.expectedPoints
+            self.allZones.append((z, points, secs))
+            zonesSeen.add(z)
+        self.totalPoints = sum((p for (z, p, s) in self.allZones))
+        self.pointsPerSecond = float(self.totalPoints) / self.totalTime if self.totalTime else 0
+        
+    def setPivot(self, pivot):
+        self.pivotZone = pivot
+        self.allPivots.add(pivot)
+
+    def setPrePivot(self, path):
+        self.prePivot = path
+        if path.pivotZone:
+            self.allPivots.add(path.pivotZone)
+
+    def setPostPivot(self, path):
+        self.postPivot = path
+        if path.pivotZone:
+            self.allPivots.add(path.pivotZone)
+    
+    def getTimeStr(self):
+        return formatSeconds(self.totalTime)
+
+    def addOn(self, pivotZone, otherPath):
+        zoneInfo = [(z, s) for (z, p, s) in self.allZones]
+        zoneInfo.append((pivotZone, self.totalTime))
+        zoneInfo += [ (z, self.totalTime + s) for (z, p, s) in otherPath.allZones ]
+        newPath = ZonePath(zoneInfo, self.totalTime + otherPath.totalTime)
+        newPath.setPivot(pivotZone)
+        newPath.setPrePivot(self)
+        newPath.setPostPivot(otherPath)
+        return newPath
+
+    def __repr__(self):
+        ppsText = str(round(self.pointsPerSecond, 2))
+        text = "Journey takes " + self.getTimeStr() + " and expects " + str(self.totalPoints) + " points = " + ppsText + " pps.\n"
+        for zone, points, secs in self.allZones:
+            prefix = "**" if zone in self.allPivots else "  "
+            text += prefix + "via " + repr(zone) + " = " + str(points).rjust(4) + " after " + formatSeconds(secs) + "\n"
+        return text
+
+    def __cmp__(self, other):
+        val = cmp(other.pointsPerSecond, self.pointsPerSecond)
+        if val:
+            return val
+        
+        return cmp(self.pivotZone.name, other.pivotZone.name)
+
+class ShortestPathHandler:
+    def __init__(self, zones, startZoneName, endZoneName):
+        self.zoneIndices = OrderedDict()
+        self.startIx, self.endIx = None, None
+        for i, zone in enumerate(zones):
+            self.zoneIndices[zone] = i
+            if zone.name.lower() == startZoneName.lower():
+                self.startIx = i
+                zone.expectedPoints = 0 # We're going there anyway... points for going again = 0
+            if zone.name.lower() == endZoneName.lower():
+                self.endIx = i
+                zone.expectedPoints = 0 # We're going there anyway...
+        self.time_matrix, self.shortest_paths, self.predecessors = None, None, None
+
+    def calculate(self, journeysByZone):
+        zoneCount = len(journeysByZone)
+        import numpy
+        self.time_matrix = numpy.zeros(shape=(zoneCount,zoneCount))
+        for i, (zone, journeys) in enumerate(journeysByZone.items()):
+            connections = makeConnections(zone, journeys)
+            for (otherZone, outbound), connection in connections.items():
+                secs = connection.avgDuration.seconds
+                j = self.zoneIndices[otherZone]
+                if outbound:
+                    self.time_matrix[i][j] = secs
+                    if self.time_matrix[j][i] == 0:
+                        self.time_matrix[j][i] = secs
+
+        from scipy.sparse.csgraph import dijkstra
+        self.shortest_paths, self.predecessors = dijkstra(self.time_matrix, return_predecessors=True)
+
+    def getPathIndices(self, source, target):
+        if source == target:
+            return []
+        preIx = target
+        indices = []
+        while True:
+            preIx = self.predecessors[source][preIx]
+            if preIx == source:
+                return indices
+            else:
+                indices.insert(0, preIx)
+
+    def getShortestPath(self, fromIx=None, toIx=None):
+        source = fromIx or self.startIx
+        target = toIx or self.endIx
+        if source == target:
+            return ZonePath([], 0)
+                
+        preIx = source
+        zones = []
+        currTime = 0
+        for ix in self.getPathIndices(source, target):
+            currTime += self.time_matrix[preIx][ix] 
+            zones.append((self.zoneIndices.keys()[ix], currTime))
+            preIx = ix
+        return ZonePath(zones, self.shortest_paths[source, target])
+
+    def getPossiblePivots(self, maxSecs, source, target):
+        indices = [ source ]
+        if source != target:
+            indices += [ target ] + self.getPathIndices(source, target)
+        pivots = []
+        for ix in range(len(self.zoneIndices)):
+            if ix in indices:
+                continue
+            timeToPivot = self.shortest_paths[source][ix]
+            if timeToPivot < 0 or timeToPivot > maxSecs:
+                continue
+
+            timeFromPivot = self.shortest_paths[ix][target]
+            if timeFromPivot < 0 or timeFromPivot > maxSecs:
+                continue
+
+            points = self.zoneIndices.keys()[ix].expectedPoints
+            if points == 0:
+                continue
+
+            combined = timeToPivot + timeFromPivot
+            if combined <= maxSecs:
+                pivots.append((ix, combined))
+        return pivots
+    
+def getPivotedPaths(shortestPath, maxSecs, startIx, endIx, shortestPaths, allZones):
+    tryPaths = []
+    if shortestPath.totalTime:
+        tryPaths.append(shortestPath)
+    pivots = shortestPaths.getPossiblePivots(maxSecs, startIx, endIx)
+    for pivotIx, totalTime in pivots:
+        path = shortestPaths.getShortestPath(startIx, pivotIx)
+        pathFrom = shortestPaths.getShortestPath(pivotIx, endIx)
+        combined = path.addOn(allZones[pivotIx], pathFrom)
+        tryPaths.append(combined)
+
+    tryPaths.sort()
+    return tryPaths
+    
+    
+def findBestRoute(journeysByZone, startZone, endZone, maxTime):
+    allZones = journeysByZone.keys()
+    shortestPaths = ShortestPathHandler(allZones, startZone, endZone)
+    shortestPaths.calculate(journeysByZone)
+    maxSecs = maxTime * 60
+    zoneCount = len(journeysByZone)
+    print "There are", zoneCount, "zones"
+    shortestPath = shortestPaths.getShortestPath()
+    print "Journey takes at least", shortestPath.getTimeStr()
+    tryPaths = getPivotedPaths(shortestPath, maxSecs, shortestPaths.startIx, shortestPaths.endIx, shortestPaths, allZones)
+    print "Found", len(tryPaths), "pivoted paths"
+    best = tryPaths[0]
+    print best
+    for path in tryPaths:
+        if path.pivotZone and (path.pivotZone.name.startswith("PrinsL") or path.pivotZone.name.startswith("Plask")):
+            print path
+
+    pivotIx = shortestPaths.zoneIndices[best.pivotZone]
+    maxFirst = maxSecs - best.postPivot.totalTime
+    maxSecond = maxSecs - best.prePivot.totalTime
+    print "Sub: trying to get to", best.pivotZone, "in less than", formatSeconds(maxFirst)
+    firstPaths = getPivotedPaths(best.prePivot, maxFirst, shortestPaths.startIx, pivotIx, shortestPaths, allZones)
+    print "Found", len(firstPaths), "pivoted paths"
+    for path in firstPaths:
+        print path
+    print "Sub: trying to get from", best.pivotZone, "in less than", formatSeconds(maxSecond)
+    secondPaths = getPivotedPaths(best.postPivot, maxSecond, pivotIx, shortestPaths.endIx, shortestPaths, allZones)
+    print "Found", len(secondPaths), "pivoted paths"
+    for path in secondPaths:
+        print path
+
+    combined = []
+    for p1 in firstPaths:
+        for p2 in secondPaths:
+            if p1.totalTime + p2.totalTime <= maxSecs:
+                combined.append(p1.addOn(best.pivotZone, p2))
+    combined.sort()
+    print "Found", len(combined), "combined paths"
+    for path in combined:
+        print path
+
+    for zonePath in tryPaths:
+        print zonePath        
+    
+
 def describeZoneWithPeriods(zone, zonePeriods=[]):
     print zone, zone.getExpectedPointsOutput()
     for rulePeriod in zonePeriods:
@@ -286,7 +510,7 @@ def describeZoneWithPeriods(zone, zonePeriods=[]):
 
 
 
-currDir = os.path.dirname(os.path.abspath(__file__))
+currDir = os.getenv("TEXTTEST_SANDBOX", os.path.dirname(os.path.abspath(__file__)))
 defaultFile = os.path.join(currDir, "curr_turf_data.txt")
 configFileName = os.path.join(currDir, "turf_config.txt")
 if not os.path.isfile(configFileName):
@@ -305,6 +529,9 @@ parser.add_argument('-f', '--file', default=defaultFile, help='turf data file to
 parser.add_argument('-z', '--zonefile', help='file to store zone average data in')
 parser.add_argument('-u', '--user', const=default_user, nargs="?", help='user to show data for')
 parser.add_argument('-t', '--timereport', action="store_true", help='show time data for zones')
+parser.add_argument('-b', '--begin', help='begin turfing at given zone')
+parser.add_argument('-e', '--end', help='end turfing at given zone')
+parser.add_argument('-m', '--maxtime', type=int, help='maximum time for turfing')
 
 args = parser.parse_args()
 
@@ -320,8 +547,9 @@ if os.path.isfile(prevAvgFile):
 
 userIds, allRulePeriods, rulePeriodsByZone = parseZoneData(args.file, args.file != defaultFile, showUser, staticData, prevAvgData)
 
+userForExpected =  showUser if args.begin else None
 for zone, zonePeriods in rulePeriodsByZone.items():
-    zone.setExpectedPoints(zonePeriods)
+    zone.setExpectedPoints(zonePeriods, userForExpected)
 
 if args.zonefile:
     expectedData = {}
@@ -334,8 +562,13 @@ if args.zonefile:
 
 if showUser:
     allRulePeriods.sort(key=lambda rp: rp.startTime)
-    if args.timereport:
-        printTimeReport(allRulePeriods, showUser, staticData, prevAvgData)
+    if args.timereport or args.begin:
+        addDataFromEarlierRounds(allRulePeriods, showUser, staticData, prevAvgData)
+        journeysByZone = convertToJourneys(allRulePeriods)
+        if args.timereport:
+            printTimeReport(journeysByZone)
+        else:
+            findBestRoute(journeysByZone, args.begin, args.end or args.begin, args.maxtime)
     else:
         for rulePeriod in allRulePeriods:
             print rulePeriod.zone, rulePeriod, rulePeriod.zone.getExpectedPointsOutput()
