@@ -532,6 +532,7 @@ parser.add_argument('-t', '--timereport', action="store_true", help='show time d
 parser.add_argument('-b', '--begin', help='begin turfing at given zone')
 parser.add_argument('-e', '--end', help='end turfing at given zone')
 parser.add_argument('-m', '--maxtime', type=int, help='maximum time for turfing')
+parser.add_argument('-H', '--html', action='store_true', help='print output as html')
 
 args = parser.parse_args()
 
@@ -559,6 +560,10 @@ if args.zonefile:
     with open(args.zonefile, "w") as f:
         pprint(expectedData, f)
 
+if args.html:
+    print '<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />'
+    print '<pre>'
+
 
 if showUser:
     allRulePeriods.sort(key=lambda rp: rp.startTime)
@@ -583,3 +588,6 @@ else:
             neutrals.append(zone)
     for zone in neutrals:
         describeZoneWithPeriods(zone)
+
+if args.html:
+    print '</pre>'
