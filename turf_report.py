@@ -403,9 +403,7 @@ class ShortestPathHandler:
             else:
                 indices.insert(0, preIx)
 
-    def getShortestPath(self, fromIx=None, toIx=None):
-        source = fromIx or self.startIx
-        target = toIx or self.endIx
+    def getShortestPath(self, source, target):
         if source == target:
             return ZonePath([], 0)
                 
@@ -416,7 +414,7 @@ class ShortestPathHandler:
             currTime += self.time_matrix[preIx][ix] 
             zones.append((self.zoneIndices.keys()[ix], currTime))
             preIx = ix
-        return ZonePath(zones, self.shortest_paths[source, target])
+        return ZonePath(zones, self.shortest_paths[source][target])
 
     def getPossiblePivots(self, maxSecs, source, target):
         indices = [ source ]
@@ -442,66 +440,73 @@ class ShortestPathHandler:
             if combined <= maxSecs:
                 pivots.append((ix, combined))
         return pivots
+   
+class RouteFinder:
+    @classmethod
+    def create(cls, journeysByZone, startZone, endZone):
+        allZones = journeysByZone.keys()
+        shortestPaths = ShortestPathHandler(allZones, startZone, endZone)
+        shortestPaths.calculate(journeysByZone)
+        return cls(shortestPaths, allZones)
     
-def getPivotedPaths(shortestPath, maxSecs, startIx, endIx, shortestPaths, allZones):
-    tryPaths = []
-    if shortestPath.totalTime:
-        tryPaths.append(shortestPath)
-    pivots = shortestPaths.getPossiblePivots(maxSecs, startIx, endIx)
-    for pivotIx, totalTime in pivots:
-        path = shortestPaths.getShortestPath(startIx, pivotIx)
-        pathFrom = shortestPaths.getShortestPath(pivotIx, endIx)
-        combined = path.addOn(allZones[pivotIx], pathFrom)
-        tryPaths.append(combined)
+    def __init__(self, shortestPaths, allZones):
+        self.shortestPaths = shortestPaths
+        self.allZones = allZones
+        
+    def findBest(self, maxTime):
+        shortestPath = self.shortestPaths.getShortestPath(self.shortestPaths.startIx, self.shortestPaths.endIx)
+        maxSecs = maxTime * 60
+        print "Journey takes at least", shortestPath.getTimeStr()
+        tryPaths = self.getPivotedPaths(shortestPath, maxSecs, self.shortestPaths.startIx, self.shortestPaths.endIx)
+        print "Found", len(tryPaths), "pivoted paths"
+        best = tryPaths[0]
+        print best
 
-    tryPaths.sort()
-    return tryPaths
-    
-    
-def findBestRoute(journeysByZone, startZone, endZone, maxTime):
-    allZones = journeysByZone.keys()
-    shortestPaths = ShortestPathHandler(allZones, startZone, endZone)
-    shortestPaths.calculate(journeysByZone)
-    maxSecs = maxTime * 60
-    zoneCount = len(journeysByZone)
-    print "There are", zoneCount, "zones"
-    shortestPath = shortestPaths.getShortestPath()
-    print "Journey takes at least", shortestPath.getTimeStr()
-    tryPaths = getPivotedPaths(shortestPath, maxSecs, shortestPaths.startIx, shortestPaths.endIx, shortestPaths, allZones)
-    print "Found", len(tryPaths), "pivoted paths"
-    best = tryPaths[0]
-    print best
-    for path in tryPaths:
-        if path.pivotZone and (path.pivotZone.name.startswith("PrinsL") or path.pivotZone.name.startswith("Plask")):
+        combined = self.addExtraPivots(best, maxSecs, self.shortestPaths.startIx, self.shortestPaths.endIx)
+        print "Found", len(combined), "combined paths"
+        for path in combined:
             print path
 
-    pivotIx = shortestPaths.zoneIndices[best.pivotZone]
-    maxFirst = maxSecs - best.postPivot.totalTime
-    maxSecond = maxSecs - best.prePivot.totalTime
-    print "Sub: trying to get to", best.pivotZone, "in less than", formatSeconds(maxFirst)
-    firstPaths = getPivotedPaths(best.prePivot, maxFirst, shortestPaths.startIx, pivotIx, shortestPaths, allZones)
-    print "Found", len(firstPaths), "pivoted paths"
-    for path in firstPaths:
-        print path
-    print "Sub: trying to get from", best.pivotZone, "in less than", formatSeconds(maxSecond)
-    secondPaths = getPivotedPaths(best.postPivot, maxSecond, pivotIx, shortestPaths.endIx, shortestPaths, allZones)
-    print "Found", len(secondPaths), "pivoted paths"
-    for path in secondPaths:
-        print path
+    def getPivotedPaths(self, shortestPath, maxSecs, startIx, endIx):
+        tryPaths = []
+        if shortestPath.totalTime:
+            tryPaths.append(shortestPath)
+        pivots = self.shortestPaths.getPossiblePivots(maxSecs, startIx, endIx)
+        for pivotIx, totalTime in pivots:
+            path = self.shortestPaths.getShortestPath(startIx, pivotIx)
+            pathFrom = self.shortestPaths.getShortestPath(pivotIx, endIx)
+            combined = path.addOn(self.allZones[pivotIx], pathFrom)
+            tryPaths.append(combined)
 
-    combined = []
-    for p1 in firstPaths:
-        for p2 in secondPaths:
-            if p1.totalTime + p2.totalTime <= maxSecs:
-                combined.append(p1.addOn(best.pivotZone, p2))
-    combined.sort()
-    print "Found", len(combined), "combined paths"
-    for path in combined:
-        print path
+        tryPaths.sort()
+        return tryPaths
 
-    for zonePath in tryPaths:
-        print zonePath        
-    
+    def logPaths(self, paths, f):
+        f.write("Found " + str(len(paths)) + " pivoted paths\n")
+        for path in paths:
+            f.write(repr(path) + "\n")
+            
+    def addExtraPivots(self, pivotedPath, maxSecs, startIx, endIx): 
+        pivotIx = self.shortestPaths.zoneIndices[pivotedPath.pivotZone]
+        maxFirst = maxSecs - pivotedPath.postPivot.totalTime
+        maxSecond = maxSecs - pivotedPath.prePivot.totalTime
+        fn = "extra-" + pivotedPath.pivotZone.name.encode("utf-8") + ".turf"
+        with open(fn, "w") as f:
+            f.write("Sub: trying to get to " + repr(pivotedPath.pivotZone) + " in less than " + formatSeconds(maxFirst) + "\n")
+            firstPaths = self.getPivotedPaths(pivotedPath.prePivot, maxFirst, startIx, pivotIx)
+            self.logPaths(firstPaths, f)
+            f.write("Sub: trying to get from " + repr(pivotedPath.pivotZone) + " in less than " + formatSeconds(maxSecond) + "\n")
+            secondPaths = self.getPivotedPaths(pivotedPath.postPivot, maxSecond, pivotIx, endIx)
+            self.logPaths(secondPaths, f)
+
+        combined = []
+        for p1 in firstPaths:
+            for p2 in secondPaths:
+                if p1.totalTime + p2.totalTime <= maxSecs:
+                    combined.append(p1.addOn(pivotedPath.pivotZone, p2))
+        combined.sort()
+        return combined
+
 
 def describeZoneWithPeriods(zone, zonePeriods=[]):
     print zone, zone.getExpectedPointsOutput()
@@ -573,7 +578,9 @@ if showUser:
         if args.timereport:
             printTimeReport(journeysByZone)
         else:
-            findBestRoute(journeysByZone, args.begin, args.end or args.begin, args.maxtime)
+            print "There are", len(journeysByZone), "zones"
+            routeFinder = RouteFinder.create(journeysByZone, args.begin, args.end or args.begin)
+            routeFinder.findBest(args.maxtime)
     else:
         for rulePeriod in allRulePeriods:
             print rulePeriod.zone, rulePeriod, rulePeriod.zone.getExpectedPointsOutput()
