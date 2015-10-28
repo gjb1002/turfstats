@@ -344,6 +344,8 @@ class ZonePath:
         newPath.setPivot(pivotZone)
         newPath.setPrePivot(self)
         newPath.setPostPivot(otherPath)
+        newPath.allPivots.update(self.allPivots)
+        newPath.allPivots.update(otherPath.allPivots)
         return newPath
 
     def __repr__(self):
@@ -464,9 +466,37 @@ class RouteFinder:
         print best
 
         combined = self.addExtraPivots(best, maxSecs, self.shortestPaths.startIx, self.shortestPaths.endIx)
+        combined.sort()
+        
         print "Found", len(combined), "combined paths"
-        for path in combined:
+
+        bestCombined = combined[0]
+        print bestCombined
+        full = self.getExpandedPrePivot(bestCombined, maxSecs, self.shortestPaths.startIx)
+        if full:
+            print "Found", len(full), "paths for first half."
+            print full[0]
+            
+            print "--- other combined for first half"
+            for path in full[1:]:
+                print path
+        print "---"
+        for path in combined[1:]:
             print path
+
+    def getExpandedPrePivot(self, path, maxSecs, startIx):
+        if path.prePivot.pivotZone:
+            pivotIx = self.shortestPaths.zoneIndices[path.pivotZone]
+            maxPrePivot =  maxSecs - path.postPivot.totalTime
+            combined = self.addExtraPivots(path.prePivot, maxPrePivot, startIx, pivotIx)
+            if combined:
+                combined += self.getExpandedPrePivot(combined[0], maxPrePivot, startIx)
+            full = [ c.addOn(path.pivotZone, path.postPivot) for c in combined ]
+            full.sort()
+            return full
+        else:
+            return []
+
 
     def getPivotedPaths(self, shortestPath, maxSecs, startIx, endIx):
         tryPaths = []
@@ -492,7 +522,7 @@ class RouteFinder:
         maxFirst = maxSecs - pivotedPath.postPivot.totalTime
         maxSecond = maxSecs - pivotedPath.prePivot.totalTime
         fn = "extra-" + pivotedPath.pivotZone.name.encode("utf-8") + ".turf"
-        with open(fn, "w") as f:
+        with open(fn, "a") as f:
             f.write("Sub: trying to get to " + repr(pivotedPath.pivotZone) + " in less than " + formatSeconds(maxFirst) + "\n")
             firstPaths = self.getPivotedPaths(pivotedPath.prePivot, maxFirst, startIx, pivotIx)
             self.logPaths(firstPaths, f)
@@ -505,7 +535,6 @@ class RouteFinder:
             for p2 in secondPaths:
                 if p1.totalTime + p2.totalTime <= maxSecs:
                     combined.append(p1.addOn(pivotedPath.pivotZone, p2))
-        combined.sort()
         return combined
 
 
