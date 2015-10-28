@@ -170,6 +170,7 @@ def formatSeconds(secs):
 
     
 class Connection:
+    walkCycleRatio = 1.6 # If it's more than twice the average it's probably walking where there is cycling :)
     def __init__(self, startZone, endZone):
         self.startZone = startZone
         self.endZone = endZone
@@ -185,7 +186,7 @@ class Connection:
     def removeWalking(self, durations):
         newDurations = []
         newJourneys = []
-        maxCycling = self.avgDuration * 2 # If it's more than twice the average it's probably walking where there is cycling :)
+        maxCycling = timedelta(seconds=(self.avgDuration.seconds * self.walkCycleRatio)) 
         for i, duration in enumerate(durations):
             if duration <= maxCycling:
                 newDurations.append(duration)
