@@ -537,11 +537,18 @@ class RouteFinder:
                     combined.append(p1.addOn(pivotedPath.pivotZone, p2))
         return combined
 
+def hasMeRecently(zonePeriods):
+    return any((p.user.userName == default_user for p in zonePeriods[-10:]))
+
 
 def describeZoneWithPeriods(zone, zonePeriods=[]):
     print zone, zone.getExpectedPointsOutput()
-    for rulePeriod in zonePeriods:
-        print "  ", rulePeriod.user, rulePeriod
+    if len(zonePeriods) <= 5 or hasMeRecently(zonePeriods):
+        for rulePeriod in zonePeriods:
+            print "  ", rulePeriod.user, rulePeriod
+    else:
+        print "   ..."
+        print "  ", zonePeriods[-1].user, zonePeriods[-1]
 
 
 
@@ -568,6 +575,9 @@ parser.add_argument('-b', '--begin', help='begin turfing at given zone')
 parser.add_argument('-e', '--end', help='end turfing at given zone')
 parser.add_argument('-m', '--maxtime', type=int, help='maximum time for turfing')
 parser.add_argument('-H', '--html', action='store_true', help='print output as html')
+
+
+
 
 args = parser.parse_args()
 
